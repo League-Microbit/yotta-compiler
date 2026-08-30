@@ -4,8 +4,8 @@ A Docker container that replaces the deprecated
 [`pext/yotta`](https://hub.docker.com/r/pext/yotta) image for
 building micro:bit projects with native C++ code locally.
 
-When you set `PXT_FORCE_LOCAL=1`, MakeCode's PXT build system pulls
-this image and runs the yotta compiler inside it — no cloud compile
+When you set `PXT_FORCE_LOCAL=1`, MakeCode's PXT build system runs
+this image for the yotta/codal compilation step — no cloud compile
 service needed.
 
 **Published to GitHub Container Registry:**
@@ -21,33 +21,28 @@ service needed.
 
 ## Using this compiler
 
-### Option 1 — Let PXT pull it automatically (recommended)
+### Option 1 — Pre-pull and tag (recommended for local builds)
 
-1. Copy `pxtarget.json` from this repo into the root of your
-   MakeCode project (alongside `pxt.json`):
-
-   ```bash
-   curl -O https://raw.githubusercontent.com/League-Microbit/yotta-compiler/main/pxtarget.json
-   ```
-
-2. Build with local compilation:
-
-   ```bash
-   PXT_FORCE_LOCAL=1 pxt build
-   ```
-
-   PXT reads `pxtarget.json`, sees `compileService.dockerImage` pointing
-   to `ghcr.io/league-microbit/yotta-compiler:latest`, pulls it from
-   GHCR, and runs the yotta build inside the container.
-
-### Option 2 — Pull manually
+PXT's codal build engine hardcodes `pext/yotta:latest` as the
+Docker image name. To use our image, pull it and tag it:
 
 ```bash
 docker pull ghcr.io/league-microbit/yotta-compiler:latest
+docker tag ghcr.io/league-microbit/yotta-compiler:latest pext/yotta:latest
 ```
 
-Then set `PXT_FORCE_LOCAL=1` and build as above. PXT will find the
-image already cached locally.
+Now `PXT_FORCE_LOCAL=1 pxt build` will find the image cached locally
+under the name PXT expects and use it instead of pulling from Docker Hub.
+
+This is a one-time setup. The `docker-pull` target in the
+[nezha-robot-template](https://github.com/League-Robotics/nezha-robot-template)
+Makefile does both steps for you.
+
+### Option 2 — Use with `pxt serve`
+
+Copy `pxtarget.json` from this repo into your project root
+(alongside `pxt.json`). This tells `pxt serve` to stay in the
+project directory rather than switching to the target directory.
 
 ### Option 3 — Build the image yourself
 
@@ -59,39 +54,17 @@ make build
 
 ## pxtarget.json
 
-The `pxtarget.json` in this repo overrides the default compile
-service config. Copy it to your project root alongside `pxt.json`:
+The `pxtarget.json` in this repo is minimal — it exists so `pxt serve`
+stays in your project directory instead of switching to the target.
+Copy it alongside your `pxt.json`:
 
 ```bash
 curl -O https://raw.githubusercontent.com/League-Microbit/yotta-compiler/main/pxtarget.json
 ```
 
-```json
-{
-    "compileService": {
-        "dockerImage": "ghcr.io/league-microbit/yotta-compiler:latest",
-        "buildEngine": "yotta",
-        "yottaTarget": "bbc-microbit-classic-gcc-nosd"
-    },
-    "variants": {
-        "mbcodal": {
-            "compileService": {
-                "dockerImage": "ghcr.io/league-microbit/yotta-compiler:latest"
-            }
-        }
-    }
-}
-```
-
-The top-level `compileService.dockerImage` covers the DAPLink (V1,
-`mbdal`) yotta path. The `variants.mbcodal.compileService.dockerImage`
-entry is **required** for micro:bit V2 projects: the CODAL build
-engine uses its own Docker image setting, and without this variant-level
-override PXT falls back to the deprecated `pext/yotta:latest`.
-
-Without this file present in your project, PXT defaults to `pext/yotta`
-images (which are deprecated and may not be available). With it, PXT
-pulls from GHCR — no Docker Hub account needed.
+For `pxt build` with `PXT_FORCE_LOCAL=1`, PXT uses the Docker image
+name hardcoded in the target's own config (`pext/yotta:latest`).
+Use Option 1 above (docker pull + tag) to substitute our image.
 
 ## Make targets
 
