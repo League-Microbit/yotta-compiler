@@ -60,7 +60,11 @@ make build
 ## pxtarget.json
 
 The `pxtarget.json` in this repo overrides the default compile
-service config. The critical field is `compileService.dockerImage`:
+service config. Copy it to your project root alongside `pxt.json`:
+
+```bash
+curl -O https://raw.githubusercontent.com/League-Microbit/yotta-compiler/main/pxtarget.json
+```
 
 ```json
 {
@@ -68,17 +72,26 @@ service config. The critical field is `compileService.dockerImage`:
         "dockerImage": "ghcr.io/league-microbit/yotta-compiler:latest",
         "buildEngine": "yotta",
         "yottaTarget": "bbc-microbit-classic-gcc-nosd"
+    },
+    "variants": {
+        "mbcodal": {
+            "compileService": {
+                "dockerImage": "ghcr.io/league-microbit/yotta-compiler:latest"
+            }
+        }
     }
 }
 ```
 
-Without this file present in your project, PXT defaults to `pext/yotta`
-(which is deprecated and may not be available). With it, PXT uses this
-image — pulled from GHCR, no Docker Hub account needed.
+The top-level `compileService.dockerImage` covers the DAPLink (V1,
+`mbdal`) yotta path. The `variants.mbcodal.compileService.dockerImage`
+entry is **required** for micro:bit V2 projects: the CODAL build
+engine uses its own Docker image setting, and without this variant-level
+override PXT falls back to the deprecated `pext/yotta:latest`.
 
-The `pxtarget.json` merges with the target's own config (e.g.
-pxt-microbit's internal settings), so you only need to specify the
-fields you want to override.
+Without this file present in your project, PXT defaults to `pext/yotta`
+images (which are deprecated and may not be available). With it, PXT
+pulls from GHCR — no Docker Hub account needed.
 
 ## Make targets
 

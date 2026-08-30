@@ -3,5 +3,12 @@
         "dockerImage": "ghcr.io/league-microbit/yotta-compiler:latest",
         "buildEngine": "yotta",
         "yottaTarget": "bbc-microbit-classic-gcc-nosd"
+    },
+    "variants": {
+        "mbcodal": {
+            "compileService": {
+                "dockerImage": "ghcr.io/league-microbit/yotta-compiler:latest"
+            }
+        }
     }
 }
