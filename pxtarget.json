@@ -1,0 +1,7 @@
+{
+    "compileService": {
+        "dockerImage": "ghcr.io/league-microbit/yotta-compiler:latest",
+        "buildEngine": "yotta",
+        "yottaTarget": "bbc-microbit-classic-gcc-nosd"
+    }
+}
