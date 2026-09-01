@@ -1,13 +1,20 @@
 # Build the yotta-compiler Docker image and publish it to
-# GitHub Container Registry (ghcr.io).
+# GitHub Container Registry (ghcr.io) as a MULTI-ARCH image.
 #
-# Pushes two tags:
+# Pushes two tags, each a manifest list covering linux/amd64 + linux/arm64:
 #   ghcr.io/league-microbit/yotta-compiler:latest
 #   ghcr.io/league-microbit/yotta-compiler:sha-<commit>
 #
-# PXT projects with pxtarget.json pointing to :latest will
-# automatically pick up the newest build on their next
-# PXT_FORCE_LOCAL=1 build.
+# arm64 matters because Apple Silicon Macs cannot pull an amd64-only image:
+# `docker pull` fails with "no matching manifest for linux/arm64/v8".
+#
+# Each architecture is built on a NATIVE runner (ubuntu-latest for amd64,
+# ubuntu-24.04-arm for arm64) and pushed by digest; a final job stitches the
+# digests into one manifest list. Native runners are used instead of QEMU
+# emulation because emulating an apt + pip toolchain install is very slow.
+#
+# PXT projects with pxtarget.json pointing to :latest will automatically pick
+# up the newest build on their next PXT_FORCE_LOCAL=1 build.
 name: Docker Publish
 
 on:
@@ -18,17 +25,34 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write
 
     steps:
       - uses: actions/checkout@v4
+
+      # ghcr.io requires a lowercase path, but github.repository preserves the
+      # org's capitalisation (League-Microbit). metadata-action lowercases on
+      # its own; the raw `outputs:` below does not, so compute it here.
+      - name: Compute image name
+        run: |
+          echo "IMAGE=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "PLATFORM_PAIR=${PLATFORM//\//-}" >> "$GITHUB_ENV"
+        env:
+          PLATFORM: ${{ matrix.platform }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -40,22 +64,92 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata (tags, labels)
+      - name: Extract metadata (labels)
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.IMAGE }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          # Scope the cache per-platform, otherwise the two jobs evict each other.
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+
+      - name: Export digest
+        run: |
+          mkdir -p "${{ runner.temp }}/digests"
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Compute image name
+        run: echo "IMAGE=${REGISTRY}/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=sha-,format=short
             type=ref,event=tag
 
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE}@sha256:%s " *)
+
+      - name: Verify both architectures are present
+        run: |
+          ref="${IMAGE}:${{ steps.meta.outputs.version }}"
+          docker buildx imagetools inspect "$ref"
+          for want in linux/amd64 linux/arm64; do
+            docker buildx imagetools inspect "$ref" --raw \
+              | jq -e --arg w "$want" \
+                  '[.manifests[] | select(.platform) | "\(.platform.os)/\(.platform.architecture)"] | index($w)' \
+                  > /dev/null \
+              || { echo "::error::$ref is missing $want"; exit 1; }
+          done
+          echo "OK: $ref publishes linux/amd64 and linux/arm64"
